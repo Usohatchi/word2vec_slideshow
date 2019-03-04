@@ -84,8 +84,7 @@ def build_data_generator(sentence_generator, tag2int, vocab_size, batch_size):
             # Generate target word / context word pairs, and their associated negative or postive labels
             couples, labels = skipgrams(sentence, vocab_size + 1, window_size=15, sampling_table=sampling_table)
             # Weird bug where skipgrams sometimes returns empy couples and labels
-            # Might have to do with the fact that we manually process sentences instead of using a tokenizer or something
-            # Its almost 11:00 and I was supposed to be done at 9:00, so im gonna ignore it for now
+            # Might have to do with the fact that we manually process sentences instead of using a tokenizer or something?
             while len(couples) == 0:
                 couples, labels = skipgrams(sentence, vocab_size + 1, window_size=15, sampling_table=sampling_table)
             word_target, word_context = zip(*couples)
@@ -160,16 +159,13 @@ def main(args):
             loss = model.train_on_batch(features, labels)
             print('epoch {}, loss is : {}'.format(e, loss))
 
-            # Save loss for tensorboard
+            # Save loss and model
             # TODO Add saving embeddings for projector here too (maybe)
-            if e % 100 == 0:
+            if e % args.checkpoint_period == 0:
                 summary = sess.run(merged_summaries, feed_dict={summary_loss: loss})
                 summary_writer.add_summary(summary, e)
-
-            # Save model
-            if e % 1000 == 0:
                 save_path = "{}/model_{}.h5".format(args.log_dir, e)
-                model.savve(
+                model.save(save_path)
 
         # Pull embedding layer weights
         # Embedding layer is the 3rd layer of the model after the 2 inputs
@@ -236,6 +232,10 @@ if __name__ == '__main__':
         "--learning-rate",
         type=int,
         default=0.001)
+    parser.add_argument(
+        "--checkpoint-period",
+        type=int,
+        default=100)
     args = parser.parse_args()
     main(args)
 
