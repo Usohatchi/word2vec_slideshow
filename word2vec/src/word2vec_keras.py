@@ -49,6 +49,7 @@ def parse_file(filename):
 
 
     # Build sentence generator. Returns all tags associated with a random image in the dataset
+    # TODO: Rebuild this so it iterates over every horizontal and vertical image
     total = len(horizontal)+len(vertical)
     proportions = [len(horizontal) / total, len(vertical) / total]
     def gen_sentence():
@@ -129,8 +130,8 @@ def build_model(vocab_size, embedding_dim):
     return model, validation_model, embedding
 
 def main(args):
-    print("Starting sentence generator generation...")
     # Gen data
+    print("Starting sentence generator generation...")
     sentence_generator, total_sentences, tag2int, vocab_size, tags, lines = parse_file(args.input_file)
     print("Sentence generator built and file parsed!")
 
@@ -144,33 +145,34 @@ def main(args):
     model, validation_model, embedding = build_model(vocab_size, args.embedding_dim)
     print("Models built!")
 
-    # Saving loss
+    # Summary writing
     summary_loss = tf.placeholder(dtype=tf.float32, shape=())
     tf.summary.scalar('loss', summary_loss)
     merged_summaries = tf.summary.merge_all()
 
     with tf.Session() as sess:
-        #saver = tf.train.Saver(max_to_keep=args.n_epoch // 1000)
         summary_path = "{}/summary".format(args.log_dir)
         summary_writer = tf.summary.FileWriter(summary_path, sess.graph)
         
         # Per epoch parse batch_size random sentences and train on the resulting dataset
         for e in range(args.n_epoch):
             features, labels = next(data_generator)
-            print(features)
-            print(labels)
             loss = model.train_on_batch(features, labels)
             print('epoch {}, loss is : {}'.format(e, loss))
+
+            # Save loss for tensorboard
+            # TODO Add saving embeddings for projector here too (maybe)
             if e % 100 == 0:
                 summary = sess.run(merged_summaries, feed_dict={summary_loss: loss})
                 summary_writer.add_summary(summary, e)
-            #TODO: Figure out how to save with model.train_on_batch
-            #if e % 1000 == 0:
-            #    save_path = "{}/model.ckpt".format(args.log_dir)
-            #    save_path = saver.save(sess, save_path, global_step=e)
+
+            # Save model
+            if e % 1000 == 0:
+                save_path = "{}/model_{}.h5".format(args.log_dir, e)
+                model.savve(
 
         # Pull embedding layer weights
-        # Embedding layer is the 3rd layer of the model
+        # Embedding layer is the 3rd layer of the model after the 2 inputs
         tag_embedding = model.layers[2].get_weights()[0]
     
     # Save the tag -> int dictionary and the embeddings layer in their own files
