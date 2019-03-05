@@ -18,10 +18,10 @@ BUCKET=$GCS_BUCKET
 TRY_NAME=$NAME
 
 TRAINER_PACKAGE_PATH="./src"
-MAIN_TRAINER_MODULE="src.word2vec"
+MAIN_TRAINER_MODULE="src.word2vec_keras"
 
 now=$(date +"%Y%m%d_%H%M%S")
-JOB_NAME="word_"$TRY_NAME"_$now"
+JOB_NAME="image2vec_"$TRY_NAME"_$now"
 
 JOB_DIR=$BUCKET$JOB_NAME
 
@@ -32,12 +32,11 @@ gcloud ml-engine jobs submit training $JOB_NAME \
     --python-version 3.5 \
     --region us-west1 \
     --runtime-version 1.10 \
-    --config "config.yaml" \
+	--scale-tier basic \
     -- \
-    --output-dir "gs://slideshow_storage/b_out" \
-    --output-name "b_data" \
-    --input-file "gs://slideshow_storage/b_lovely_landscapes.txt" \
-    --log-dir "gs://slideshow_storage/b_log" \
-    --batch-size 10 \
-    --n-epoch 10000 \
-    --embedding-dim 5
+	--output-dir $BUCKET"c/out" \
+	--output-name $JOB_NAME \
+	--input-file $BUCKET"c/data/c_memorable_moments.txt" \
+	--log-dir $BUCKET"c/log" \
+	--n-epoch 25000000 \
+	--embedding-dim 50
