@@ -2,7 +2,7 @@ import tensorflow as tf
 from tensorflow.keras.preprocessing.sequence import skipgrams
 from tensorflow.keras.preprocessing import sequence
 from tensorflow.keras.layers import Embedding, Reshape, Input, Dense, dot
-from tensorflow.keras.models import Model
+from tensorflow.keras.models import Model, load_model
 
 import numpy as np
 from collections import Counter
@@ -40,7 +40,7 @@ def parse_file(filename):
     count = [['UNK', -1]]
     count.extend(Counter(tags).most_common())
     tag2int = dict()
-    for tag in tags:
+    for tag in count:
         tag2int[tag] = len(tag2int)
 
     # Reduce list to unique values
@@ -48,32 +48,28 @@ def parse_file(filename):
     vocab_size = len(tags)
 
 
-    # Build sentence generator. Returns all tags associated with a random image in the dataset
-    # TODO: Rebuild this so it iterates over every horizontal and vertical image
-    total = len(horizontal)+len(vertical)
+    # Build sentence generator. Iterates through all horizontal and vertical tags
+    total = len(horizontal) + len(vertical)
     proportions = [len(horizontal) / total, len(vertical) / total]
+    h_count = 0
+    v_count = 0
     def gen_sentence():
         while True:
             is_horizontal = np.random.choice([True,False],p=proportions)
-            is_horizontal = True
             if is_horizontal:
-                slide = horizontal[np.random.randint(len(horizontal))]
-                slide = [tag2int[tag] for tag in slide]
-                yield slide
-            # If vertical, pick two random vertical photos and add their tags together
+                slide = horizontal[h_count]
+                h_count = h_count + 1 if h_count < len(horizontal) - 1 else 0
             else:
-                slide_left = vertical[np.random.randint(len(vertical))]
-                slide_right = vertical[np.random.randint(len(vertical))]
-                slide = list(slide_left) + list(slide_right)
-                slide = [tag2int[tag] for tag in slide]
-                yield slide
+                slide = horizontal[v_count]
+                v_count = v_count + 1 if v_count < len(vertical) - 1 else 0
+            slide = [tag2int[tag] for tag in slide]
+            yield slide
 
     return gen_sentence(), int(max_sample_size), tag2int, vocab_size, tags, lines
 
 def build_data_generator(sentence_generator, tag2int, vocab_size, batch_size):
     # Sampling table for keras skipgram function
     # Tells keras what the vocab size is, so it can pick negtive examples without being biased by how common words are
-    print(vocab_size)
     sampling_table = sequence.make_sampling_table(vocab_size + 1)
 
     # Build dataset generator for training
@@ -88,6 +84,7 @@ def build_data_generator(sentence_generator, tag2int, vocab_size, batch_size):
             while len(couples) == 0:
                 couples, labels = skipgrams(sentence, vocab_size + 1, window_size=15, sampling_table=sampling_table)
             word_target, word_context = zip(*couples)
+            # Convert to numpy arrays so our models can use the data
             word_target = np.array(word_target, dtype="int32")
             word_context = np.array(word_context, dtype="int32")
             labels = np.array(labels, dtype="int32")
@@ -141,7 +138,10 @@ def main(args):
 
     # Build models
     print("Starting model building...")
-    model, validation_model, embedding = build_model(vocab_size, args.embedding_dim)
+    if args.restore != None:
+        model, validation_model, embedding = build_model(vocab_size, args.embedding_dim)
+    else:
+        model = load_model(args.restore)
     print("Models built!")
 
     # Summary writing
@@ -149,9 +149,15 @@ def main(args):
     tf.summary.scalar('loss', summary_loss)
     merged_summaries = tf.summary.merge_all()
 
+    # Converting our final image embedding matrix to a tensor to save for tensorboard
+    # Called once at the very end of the program
+    summary_embedding = tf.placeholder(dtype=tf.float32, shape=(len(lines), args.embedding_dim))
+    images = tf.Variable(summary_embedding, name='images')
+
     with tf.Session() as sess:
         summary_path = "{}/summary".format(args.log_dir)
         summary_writer = tf.summary.FileWriter(summary_path, sess.graph)
+        saver = tf.train.Saver([images])
         
         # Per epoch parse batch_size random sentences and train on the resulting dataset
         for e in range(args.n_epoch):
@@ -160,7 +166,6 @@ def main(args):
             print('epoch {}, loss is : {}'.format(e, loss))
 
             # Save loss and model
-            # TODO Add saving embeddings for projector here too (maybe)
             if e % args.checkpoint_period == 0:
                 summary = sess.run(merged_summaries, feed_dict={summary_loss: loss})
                 summary_writer.add_summary(summary, e)
@@ -171,28 +176,29 @@ def main(args):
         # Embedding layer is the 3rd layer of the model after the 2 inputs
         tag_embedding = model.layers[2].get_weights()[0]
     
-    # Save the tag -> int dictionary and the embeddings layer in their own files
-    ### WORKS WITH GCP ML ENGINE
-    tag_matrix_out = "{}/{}_tag_embedding.npy".format(args.output_dir, args.output_name)
-    np.save(file_io.FileIO(tag_matrix_out, 'w'), tag_embedding)
-    dict_out = "{}/{}_tag_dict.npy".format(args.output_dir, args.output_name)
-    np.save(file_io.FileIO(dict_out, 'w'), tag2int)
+        # Save the tag -> int dictionary and the embeddings layer in their own files
+        tag_matrix_out = "{}/{}_tag_embedding.npy".format(args.output_dir, args.output_name)
+        np.save(file_io.FileIO(tag_matrix_out, 'w'), tag_embedding)
+        dict_out = "{}/{}_tag_dict.npy".format(args.output_dir, args.output_name)
+        np.save(file_io.FileIO(dict_out, 'w'), tag2int)
 
-    # Build image2vec embedding matrix
-    # first line is embedding[0], second is embedding[1], ... embedding[x]
-    image_embedding = []
-    for index, line in enumerate(lines):
-        # Add up all tag vectors to make an image vector
-        image_vector = np.zeros(args.embedding_dim)
-        for tag in line[2:]:
-            image_vector += tag_embedding[tag2int[tag]]
-        image_embedding.append(image_vector)
-    
-    # Save the image2vec embedding matrix
-    image_matrix_out = "{}/{}_image_dict.npy".format(args.output_dir, args.output_name)
-    np.save(file_io.FileIO(image_matrix_out, 'w'), image_embedding)
+        # Build image2vec embedding matrix
+        # first line is embedding[0], second is embedding[1], ... embedding[x]
+        image_embedding = []
+        for index, line in enumerate(lines):
+            # Add up all tag vectors to make an image vector
+            image_vector = np.zeros(args.embedding_dim)
+            for tag in line[2:]:
+                image_vector += tag_embedding[tag2int[tag]]
+            image_embedding.append(image_vector)
+        
+        # Save the image2vec embedding matrix
+        image_matrix_out = "{}/{}_image_dict.npy".format(args.output_dir, args.output_name)
+        np.save(file_io.FileIO(image_matrix_out, 'w'), image_embedding)
 
-            
+        sess.run(images.initializer, feed_dict={summary_embedding: image_embedding})
+        embedding_path = "{}/image.ckpt".format(args.log_dir)
+        saver.save(sess, embedding_path)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("word2vec")
@@ -232,6 +238,10 @@ if __name__ == '__main__':
         "--learning-rate",
         type=int,
         default=0.001)
+    parser.add_argument(
+        "--restore",
+        type=str,
+        default=None)
     parser.add_argument(
         "--checkpoint-period",
         type=int,
