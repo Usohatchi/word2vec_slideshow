@@ -40,7 +40,7 @@ def parse_file(filename):
     count = [['UNK', -1]]
     count.extend(Counter(tags).most_common())
     tag2int = dict()
-    for tag in count:
+    for tag, _ in count:
         tag2int[tag] = len(tag2int)
 
     # Reduce list to unique values
@@ -51,9 +51,9 @@ def parse_file(filename):
     # Build sentence generator. Iterates through all horizontal and vertical tags
     total = len(horizontal) + len(vertical)
     proportions = [len(horizontal) / total, len(vertical) / total]
-    h_count = 0
-    v_count = 0
     def gen_sentence():
+        h_count = 0
+        v_count = 0
         while True:
             is_horizontal = np.random.choice([True,False],p=proportions)
             if is_horizontal:
@@ -138,7 +138,7 @@ def main(args):
 
     # Build models
     print("Starting model building...")
-    if args.restore != None:
+    if args.restore == None:
         model, validation_model, embedding = build_model(vocab_size, args.embedding_dim)
     else:
         model = load_model(args.restore)
