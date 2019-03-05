@@ -136,14 +136,6 @@ def main(args):
     data_generator = build_data_generator(sentence_generator, tag2int, vocab_size, args.batch_size)
     print("Data generator built!")
 
-    # Build models
-    print("Starting model building...")
-    if args.restore == None:
-        model, validation_model, embedding = build_model(vocab_size, args.embedding_dim)
-    else:
-        model = load_model(args.restore)
-    print("Models built!")
-
     # Summary writing
     summary_loss = tf.placeholder(dtype=tf.float32, shape=())
     tf.summary.scalar('loss', summary_loss)
@@ -158,6 +150,15 @@ def main(args):
         summary_path = "{}/summary".format(args.log_dir)
         summary_writer = tf.summary.FileWriter(summary_path, sess.graph)
         saver = tf.train.Saver([images])
+
+        # Build models
+        print("Starting model building...")
+        if args.restore == None:
+            model, validation_model, embedding = build_model(vocab_size, args.embedding_dim)
+        else:
+            model = load_model(args.restore)
+            print("Model restored from {}".format(args.restore))
+        print("Models built!")
         
         # Per epoch parse batch_size random sentences and train on the resulting dataset
         for e in range(args.n_epoch):
