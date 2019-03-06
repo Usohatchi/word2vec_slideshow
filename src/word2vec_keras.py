@@ -27,11 +27,12 @@ def parse_file(filename):
     for i, line in enumerate(lines):
         tags.extend(line[2:])
         if line[0] == 'H':
-            horizontal.append(tuple(line[2:]))
+            horizontal.append((i, tuple(line[2:])))
             max_sample_size += 1.
         else:
-            vertical.append(tuple(line[2:]))
+            vertical.append((i, tuple(line[2:])))
             max_sample_size += 0.5
+        lines[i] = line[2:]
 
     # Create a dictionary that allows tag -> index lookup
     # Index in this case is corrlelated to how common it is
@@ -47,25 +48,16 @@ def parse_file(filename):
     tags = list(set(tags))
     vocab_size = len(tags)
 
-
     # Build sentence generator. Iterates through all horizontal and vertical tags
-    total = len(horizontal) + len(vertical)
-    proportions = [len(horizontal) / total, len(vertical) / total]
     def gen_sentence():
-        h_count = 0
-        v_count = 0
+        count = 0
         while True:
-            is_horizontal = np.random.choice([True,False],p=proportions)
-            if is_horizontal:
-                slide = horizontal[h_count]
-                h_count = h_count + 1 if h_count < len(horizontal) - 1 else 0
-            else:
-                slide = horizontal[v_count]
-                v_count = v_count + 1 if v_count < len(vertical) - 1 else 0
+            slide = lines[count]
+            h_count = count + 1 if count < len(lines) - 1 else 0
             slide = [tag2int[tag] for tag in slide]
             yield slide
 
-    return gen_sentence(), int(max_sample_size), tag2int, vocab_size, tags, lines
+    return gen_sentence(), tag2int, vocab_size, tags, lines, vertical, horizontal
 
 def build_data_generator(sentence_generator, tag2int, vocab_size, batch_size):
     # Sampling table for keras skipgram function
@@ -125,10 +117,60 @@ def build_model(vocab_size, embedding_dim):
 
     return model, validation_model, embedding
 
+def build_slide_embedding(lines, vertical, horizontal, tag2int, tag_embedding):
+    # Lookup the index of the slide embedding matrix and get all photos that make up that slide
+    slide2image = {}
+    # Lookup an image index relative to line number in the file, and get all slides that the image is part of
+    image2slide = {}
+    # Lookup slide id and get lower dimension vector
+    slide_embedding = []
+
+    print("Starting slide embedding genration...")
+    # Horizontals get directly converted
+    for index, tags in horizontal:
+        slide2image[len(slide_embedding)] = [index]
+        image2slide[index] = [len(slide_embedding)]
+        slide_vector = np.zeros(args.embedding_dim)
+        for tag in tags:
+            slide_vector += tag_embedding[tag2int[tag]]
+        slide_embedding.append(slide_vector)
+
+    # Building one slide for every single combination of vertical images
+    for index, _data in enumerate(vertical):
+        index_one, tags_one = _data
+        for index_two, tags_two in vertical[index:]:
+            # Can't combine image with itself to make a slide
+            if index_one == index_two:
+                continue
+            # Remember what photos made up this slide
+            slide2image[len(slide_embedding)] = [index_one, index_two]
+
+            # Remember what slide these photos made up
+            # Build a new array if the key doesn't exist, otherwise add to the array
+            if index_one in image2slide:
+                image2slide[index_one].append(len(slide_embedding))
+            else:
+                image2slide[index_one] = [len(slide_embedding)]
+            if index_two in image2slide:
+                image2slide[index_two].append(len(slide_embedding))
+            else:
+                image2slide[index_two] = [len(slide_embedding)]
+
+            # Build and add slide vector to embedding
+            slide_vector = np.zeros(args.embedding_dim)
+            for tag in tags_one:
+                slide_vector += tag_embedding[tag2int[tag]]
+            for tag in tags_two:
+                slide_vector += tag_embedding[tag2int[tag]]
+            slide_embedding.append(slide_vector)
+    
+    print("Slide embedding built!")
+    return slide_embedding, slide2image, image2slide
+
 def main(args):
     # Gen data
     print("Starting sentence generator generation...")
-    sentence_generator, total_sentences, tag2int, vocab_size, tags, lines = parse_file(args.input_file)
+    sentence_generator, tag2int, vocab_size, tags, lines, vertical, horizontal = parse_file(args.input_file)
     print("Sentence generator built and file parsed!")
 
     # Make training data
@@ -143,7 +185,8 @@ def main(args):
 
     # Converting our final image embedding matrix to a tensor to save for tensorboard
     # Called once at the very end of the program
-    summary_embedding = tf.placeholder(dtype=tf.float32, shape=(len(lines), args.embedding_dim))
+    slide_embedding_size = sum([x for x in range(len(vertical))]) + len(horizontal)
+    summary_embedding = tf.placeholder(dtype=tf.float32, shape=(slide_embedding_size, args.embedding_dim))
     images = tf.Variable(summary_embedding, name='images')
 
     with tf.Session() as sess:
@@ -183,21 +226,21 @@ def main(args):
         dict_out = "{}/{}_tag_dict.npy".format(args.output_dir, args.output_name)
         np.save(file_io.FileIO(dict_out, 'w'), tag2int)
 
-        # Build image2vec embedding matrix
-        # first line is embedding[0], second is embedding[1], ... embedding[x]
-        image_embedding = []
-        for index, line in enumerate(lines):
-            # Add up all tag vectors to make an image vector
-            image_vector = np.zeros(args.embedding_dim)
-            for tag in line[2:]:
-                image_vector += tag_embedding[tag2int[tag]]
-            image_embedding.append(image_vector)
+        # Build slide embedding and dictionaries
+        slide_embedding, slide2image, image2slide = build_slide_embedding(lines, vertical, horizontal, tag2int, tag_embedding)
         
-        # Save the image2vec embedding matrix
-        image_matrix_out = "{}/{}_image_dict.npy".format(args.output_dir, args.output_name)
-        np.save(file_io.FileIO(image_matrix_out, 'w'), image_embedding)
+        # Save the slide embedding matrix
+        slide_embedding_out = "{}/{}_slide_embedding.npy".format(args.output_dir, args.output_name)
+        np.save(file_io.FileIO(slide_embedding_out, 'w'), slide_embedding)
 
-        sess.run(images.initializer, feed_dict={summary_embedding: image_embedding})
+        # Save the lookup dictionaries
+        slide2image_out = "{}/{}_slide2image.npy".format(args.output_dir, args.output_name)
+        np.save(file_io.FileIO(slide2image_out, 'w'), slide2image)
+        image2slide_out = "{}/{}_image2slide.npy".format(args.output_dir, args.output_name)
+        np.save(file_io.FileIO(image2slide_out, 'w'), image2slide)
+
+        # Save the slide embeddings for tensorboard
+        sess.run(images.initializer, feed_dict={summary_embedding: slide_embedding})
         embedding_path = "{}/image.ckpt".format(args.log_dir)
         saver.save(sess, embedding_path)
 
